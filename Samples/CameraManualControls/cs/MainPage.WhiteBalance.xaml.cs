@@ -25,9 +25,9 @@ namespace CameraManualControls
 
         private void UpdateWbControlCapabilities()
         {
-            var whiteBalanceControl = _mediaCapture.VideoDeviceController.WhiteBalanceControl;
+            var whiteBalanceControl = _mediaCapture.VideoDeviceController.WhiteBalance;
 
-            if (whiteBalanceControl.Supported)
+            if (whiteBalanceControl.Capabilities.Supported)
             {
                 WbButton.Tag = Visibility.Visible;
 
@@ -36,19 +36,20 @@ namespace CameraManualControls
                     WbComboBox.ItemsSource = Enum.GetValues(typeof(ColorTemperaturePreset)).Cast<ColorTemperaturePreset>();
                 }
 
-                WbComboBox.SelectedItem = whiteBalanceControl.Preset;
-
-                if (whiteBalanceControl.Max - whiteBalanceControl.Min > whiteBalanceControl.Step)
+                
+                if (whiteBalanceControl.Capabilities.Max - whiteBalanceControl.Capabilities.Min > whiteBalanceControl.Capabilities.Step)
                 {
                     // Unhook the event handler, so that changing properties on the slider won't trigger an API call
                     WbSlider.ValueChanged -= WbSlider_ValueChanged;
 
-                    var value = whiteBalanceControl.Value;
-                    WbSlider.Minimum = whiteBalanceControl.Min;
-                    WbSlider.Maximum = whiteBalanceControl.Max;
-                    WbSlider.StepFrequency = whiteBalanceControl.Step;
-                    WbSlider.Value = value;
-
+                    whiteBalanceControl.TrySetAuto(false);
+                    if (whiteBalanceControl.TryGetValue(out double value))
+                    {
+                        WbSlider.Minimum = whiteBalanceControl.Capabilities.Min;
+                        WbSlider.Maximum = whiteBalanceControl.Capabilities.Max;
+                        WbSlider.StepFrequency = whiteBalanceControl.Capabilities.Step;
+                        WbSlider.Value = value;
+                    }
                     WbSlider.ValueChanged += WbSlider_ValueChanged;
                 }
                 else
@@ -81,7 +82,7 @@ namespace CameraManualControls
 
             var value = (sender as Slider).Value;
 
-            await _mediaCapture.VideoDeviceController.WhiteBalanceControl.SetValueAsync((uint)value);
+            _mediaCapture.VideoDeviceController.WhiteBalance.TrySetValue(value);
         }
 
     }

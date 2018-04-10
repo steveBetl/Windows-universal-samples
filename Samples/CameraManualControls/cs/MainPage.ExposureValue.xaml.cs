@@ -25,22 +25,24 @@ namespace CameraManualControls
 
         private void UpdateEvControlCapabilities()
         {
-            var exposureCompensationControl = _mediaCapture.VideoDeviceController.ExposureCompensationControl;
+            var exposureCompensationControl = _mediaCapture.VideoDeviceController.Exposure;
 
-            if (exposureCompensationControl.Supported)
+            if (exposureCompensationControl.Capabilities.Supported)
             {
                 EvButton.Tag = Visibility.Visible;
+                exposureCompensationControl.TrySetAuto(false);
+                if (exposureCompensationControl.TryGetValue(out double value))
+                {
 
-                var value = exposureCompensationControl.Value;
+                    // The slider will track the number of steps
+                    var stepSize = exposureCompensationControl.Capabilities.Step;
+                    EvSlider.Minimum = exposureCompensationControl.Capabilities.Min / stepSize;
+                    EvSlider.Maximum = exposureCompensationControl.Capabilities.Max / stepSize;
+                    EvSlider.StepFrequency = 1;
+                    EvSlider.Value = value / stepSize;
 
-                // The slider will track the number of steps
-                var stepSize = exposureCompensationControl.Step;
-                EvSlider.Minimum = exposureCompensationControl.Min / stepSize;
-                EvSlider.Maximum = exposureCompensationControl.Max / stepSize;
-                EvSlider.StepFrequency = 1;
-                EvSlider.Value = value / stepSize;
-
-                EvTextBlock.Text = EvStepCountToString((int)Math.Round(value), stepSize);
+                    EvTextBlock.Text = EvStepCountToString((int) Math.Round(value), (float)stepSize);
+                }
             }
             else
             {
@@ -53,12 +55,12 @@ namespace CameraManualControls
         {
             if (_settingUpUi) return;
 
-            float stepSize = _mediaCapture.VideoDeviceController.ExposureCompensationControl.Step;
+            double stepSize = _mediaCapture.VideoDeviceController.Exposure.Capabilities.Step;
 
             var value = (sender as Slider).Value;
-            await _mediaCapture.VideoDeviceController.ExposureCompensationControl.SetValueAsync((float)value * stepSize);
+            _mediaCapture.VideoDeviceController.Exposure.TrySetValue(value * stepSize);
 
-            EvTextBlock.Text = EvStepCountToString((int)Math.Round(value), stepSize);
+            EvTextBlock.Text = EvStepCountToString((int)Math.Round(value), (float) stepSize);
         }
 
         /// <summary>

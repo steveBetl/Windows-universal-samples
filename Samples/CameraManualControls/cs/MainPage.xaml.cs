@@ -10,8 +10,10 @@
 //*********************************************************
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Windows.ApplicationModel;
 using Windows.Devices.Enumeration;
@@ -44,6 +46,10 @@ namespace CameraManualControls
 
     public sealed partial class MainPage : Page
     {
+        int _minFrameRate = 1;
+        private Timer _timer;
+        private const int RecordFileDuration = 3600000;
+
         // Receive notifications about rotation of the device and UI and apply any necessary rotation to the preview stream and UI controls       
         private readonly DisplayInformation _displayInformation = DisplayInformation.GetForCurrentView();
         private readonly SimpleOrientationSensor _orientationSensor = SimpleOrientationSensor.GetDefault();
@@ -95,6 +101,23 @@ namespace CameraManualControls
             // Useful to know when to initialize/clean up the camera
             Application.Current.Suspending += Application_Suspending;
             Application.Current.Resuming += Application_Resuming;
+            Loaded += Application_Loaded;
+        }
+
+        private async void Application_Loaded(object sender, RoutedEventArgs e)
+        {
+
+            var picker =
+                new Windows.Storage.Pickers.FolderPicker
+                {
+                    ViewMode = Windows.Storage.Pickers.PickerViewMode.Thumbnail,
+                    SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.PicturesLibrary,
+                    FileTypeFilter = { "*" }
+                };
+            _captureFolder = await picker.PickSingleFolderAsync();
+            if (_captureFolder == null) _captureFolder = (await StorageLibrary.GetLibraryAsync(KnownLibraryId.Pictures)).SaveFolder;
+            await StartRecordingAsync();
+
         }
 
         private async void Application_Suspending(object sender, SuspendingEventArgs e)
@@ -208,26 +231,6 @@ namespace CameraManualControls
             await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () => UpdateButtonOrientation());
         }
 
-        private async void PhotoButton_Click(object sender, RoutedEventArgs e)
-        {
-            await TakePhotoAsync();
-        }
-
-        private async void VideoButton_Click(object sender, RoutedEventArgs e)
-        {
-            if (!_isRecording)
-            {
-                await StartRecordingAsync();
-            }
-            else
-            {
-                await StopRecordingAsync();
-            }
-
-            // After starting or stopping video recording, update the UI to reflect the MediaCapture state
-            UpdateCaptureControls();
-        }
-
         private async void HardwareButtons_CameraPressed(object sender, CameraEventArgs e)
         {
             await TakePhotoAsync();
@@ -310,12 +313,16 @@ namespace CameraManualControls
 
                 // Create MediaCapture and its settings
                 _mediaCapture = new MediaCapture();
-
+                
                 // Register for a notification when video recording has reached the maximum time and when something goes wrong
                 _mediaCapture.RecordLimitationExceeded += MediaCapture_RecordLimitationExceeded;
                 _mediaCapture.Failed += MediaCapture_Failed;
 
-                var settings = new MediaCaptureInitializationSettings { VideoDeviceId = cameraDevice.Id };
+                var settings = new MediaCaptureInitializationSettings
+                {
+                    VideoDeviceId = cameraDevice.Id,
+                    StreamingCaptureMode = StreamingCaptureMode.Video
+                };
 
                 // Initialize MediaCapture
                 try
@@ -345,9 +352,28 @@ namespace CameraManualControls
                         // Only mirror the preview if the camera is on the front panel
                         _mirroringPreview = (cameraDevice.EnclosureLocation.Panel == Windows.Devices.Enumeration.Panel.Front);
                     }
+                    //We want the largest stream where the frame rate is above the minimum threshold
+                    IEnumerable<StreamPropertiesHelper> props = _mediaCapture.VideoDeviceController
+                        .GetAvailableMediaStreamProperties(MediaStreamType.VideoRecord)
+                        .Select(x => new StreamPropertiesHelper(x))
+                        .OrderByDescending(x => x.Height * x.Width)
+                        .ThenByDescending(x => x.FrameRate)
+                        .Where(x => x.FrameRate > _minFrameRate)
+                        .ToArray();
 
+
+                    foreach (var cap in props)
+                    {
+                        Debug.WriteLine(cap.GetFriendlyName());
+                    }
+                    var desired = props.First();
+                    await _mediaCapture.VideoDeviceController.SetMediaStreamPropertiesAsync(MediaStreamType.VideoRecord, desired.EncodingProperties);
+                    await _mediaCapture.VideoDeviceController.SetMediaStreamPropertiesAsync(MediaStreamType.VideoPreview, desired.EncodingProperties);
                     await StartPreviewAsync();
 
+                    var picturesLibrary = await StorageLibrary.GetLibraryAsync(KnownLibraryId.Pictures);
+
+                    
                     UpdateCaptureControls();
                     UpdateManualControlCapabilities();
                 }
@@ -462,6 +488,34 @@ namespace CameraManualControls
             VideoButton.Opacity = 1;
         }
 
+        private async Task ExecuteStart()
+        {
+            // Create storage file for the capture
+            var videoFile = await _captureFolder.CreateFileAsync($"Video {DateTime.Now:yy-MM-dd HH-mm-ss}.mp4", CreationCollisionOption.GenerateUniqueName);
+
+            var encodingProfile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.Auto);
+
+            // Calculate rotation angle, taking mirroring into account if necessary
+            var rotationAngle = 360 - ConvertDeviceOrientationToDegrees(GetCameraOrientation());
+            encodingProfile.Video.Properties.Add(RotationKey, PropertyValue.CreateInt32(rotationAngle));
+
+            Debug.WriteLine("Starting recording to " + videoFile.Path);
+
+            await _mediaCapture.StartRecordToStorageFileAsync(encodingProfile, videoFile);
+            _isRecording = true;
+
+            Debug.WriteLine("Started recording!");
+        }
+
+        private async void SwitchRecordingFile(object ignored)
+        {
+            _isRecording = false;
+            await _mediaCapture.StopRecordAsync();
+            await ExecuteStart();
+            _isRecording = true;
+
+        }
+
         /// <summary>
         /// Records an MP4 video to a StorageFile and adds rotation metadata to it
         /// </summary>
@@ -470,21 +524,8 @@ namespace CameraManualControls
         {
             try
             {
-                // Create storage file for the capture
-                var videoFile = await _captureFolder.CreateFileAsync("SimpleVideo.mp4", CreationCollisionOption.GenerateUniqueName);
-
-                var encodingProfile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.Auto);
-
-                // Calculate rotation angle, taking mirroring into account if necessary
-                var rotationAngle = 360 - ConvertDeviceOrientationToDegrees(GetCameraOrientation());
-                encodingProfile.Video.Properties.Add(RotationKey, PropertyValue.CreateInt32(rotationAngle));
-
-                Debug.WriteLine("Starting recording to " + videoFile.Path);
-
-                await _mediaCapture.StartRecordToStorageFileAsync(encodingProfile, videoFile);
-                _isRecording = true;
-
-                Debug.WriteLine("Started recording!");
+                _timer = new Timer(SwitchRecordingFile, null, RecordFileDuration, RecordFileDuration);
+                await ExecuteStart();
             }
             catch (Exception ex)
             {
@@ -499,6 +540,7 @@ namespace CameraManualControls
         /// <returns></returns>
         private async Task StopRecordingAsync()
         {
+            _timer?.Dispose();
             Debug.WriteLine("Stopping recording...");
 
             _isRecording = false;
@@ -569,9 +611,8 @@ namespace CameraManualControls
 
             RegisterEventHandlers();
 
-            var picturesLibrary = await StorageLibrary.GetLibraryAsync(KnownLibraryId.Pictures);
-            // Fall back to the local app storage if the Pictures Library is not available
-            _captureFolder = picturesLibrary.SaveFolder ?? ApplicationData.Current.LocalFolder;
+            
+            
         }
 
         /// <summary>
@@ -595,7 +636,6 @@ namespace CameraManualControls
         private void UpdateCaptureControls()
         {
             // The buttons should only be enabled if the preview started sucessfully
-            PhotoButton.IsEnabled = _isPreviewing;
             VideoButton.IsEnabled = _isPreviewing;
 
             // Depending on the preview, hide or show the controls grid which houses the individual control buttons and settings
@@ -605,14 +645,6 @@ namespace CameraManualControls
             StartRecordingIcon.Visibility = _isRecording ? Visibility.Collapsed : Visibility.Visible;
             StopRecordingIcon.Visibility = _isRecording ? Visibility.Visible : Visibility.Collapsed;
 
-            // If the camera doesn't support simultaneosly taking pictures and recording video, disable the photo button on record
-            if (_isInitialized && !_mediaCapture.MediaCaptureSettings.ConcurrentRecordAndPhotoSupported)
-            {
-                PhotoButton.IsEnabled = !_isRecording;
-
-                // Make the button invisible if it's disabled, so it's obvious it cannot be interacted with
-                PhotoButton.Opacity = PhotoButton.IsEnabled ? 1 : 0;
-            }
         }
 
         /// <summary>
@@ -905,7 +937,6 @@ namespace CameraManualControls
             var transform = new RotateTransform { Angle = angle };
 
             // The RenderTransform is safe to use (i.e. it won't cause layout issues) in this case, because these buttons have a 1:1 aspect ratio
-            PhotoButton.RenderTransform = transform;
             VideoButton.RenderTransform = transform;
         }
 
@@ -994,5 +1025,97 @@ namespace CameraManualControls
         {
             return value;
         }
+    }
+
+    class StreamPropertiesHelper
+    {
+        public StreamPropertiesHelper(IMediaEncodingProperties properties)
+        {
+            if (properties == null)
+            {
+                throw new ArgumentNullException(nameof(properties));
+            }
+
+            // This helper class only uses VideoEncodingProperties or VideoEncodingProperties
+            if (!(properties is ImageEncodingProperties) && !(properties is VideoEncodingProperties))
+            {
+                throw new ArgumentException("Argument is of the wrong type. Required: " + typeof(ImageEncodingProperties).Name
+                                            + " or " + typeof(VideoEncodingProperties).Name + ".", nameof(properties));
+            }
+
+            // Store the actual instance of the IMediaEncodingProperties for setting them later
+            EncodingProperties = properties;
+        }
+
+        public uint Width
+        {
+            get
+            {
+                if (EncodingProperties is ImageEncodingProperties)
+                {
+                    return (EncodingProperties as ImageEncodingProperties).Width;
+                }
+                else if (EncodingProperties is VideoEncodingProperties)
+                {
+                    return (EncodingProperties as VideoEncodingProperties).Width;
+                }
+
+                return 0;
+            }
+        }
+
+        public uint Height
+        {
+            get
+            {
+                if (EncodingProperties is ImageEncodingProperties)
+                {
+                    return (EncodingProperties as ImageEncodingProperties).Height;
+                }
+                else if (EncodingProperties is VideoEncodingProperties)
+                {
+                    return (EncodingProperties as VideoEncodingProperties).Height;
+                }
+
+                return 0;
+            }
+        }
+
+        public uint FrameRate
+        {
+            get
+            {
+                if (EncodingProperties is VideoEncodingProperties)
+                {
+                    if ((EncodingProperties as VideoEncodingProperties).FrameRate.Denominator != 0)
+                    {
+                        return (EncodingProperties as VideoEncodingProperties).FrameRate.Numerator /
+                               (EncodingProperties as VideoEncodingProperties).FrameRate.Denominator;
+                    }
+                }
+
+                return 0;
+            }
+        }
+
+        public double AspectRatio => Math.Round(Height != 0 ? (Width / (double)Height) : double.NaN, 2);
+
+        public IMediaEncodingProperties EncodingProperties { get; }
+
+        public string GetFriendlyName(bool showFrameRate = true)
+        {
+            if (EncodingProperties is ImageEncodingProperties ||
+                !showFrameRate)
+            {
+                return Width + "x" + Height + " [" + AspectRatio + "] " + EncodingProperties.Subtype;
+            }
+            else if (EncodingProperties is VideoEncodingProperties)
+            {
+                return Width + "x" + Height + " [" + AspectRatio + "] " + FrameRate + "FPS " + EncodingProperties.Subtype;
+            }
+
+            return String.Empty;
+        }
+
     }
 }

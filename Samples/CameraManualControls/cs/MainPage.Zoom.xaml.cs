@@ -25,19 +25,20 @@ namespace CameraManualControls
 
         private void UpdateZoomControlCapabilities()
         {
-            var zoomControl = _mediaCapture.VideoDeviceController.ZoomControl;
+            var zoomControl = _mediaCapture.VideoDeviceController.Zoom;
 
-            if (zoomControl.Supported)
+            if (zoomControl.Capabilities.Supported)
             {
                 ZoomButton.Tag = Visibility.Visible;
 
                 // Unhook the event handler, so that changing properties on the slider won't trigger an API call
                 ZoomSlider.ValueChanged -= ZoomSlider_ValueChanged;
 
-                var value = zoomControl.Value;
-                ZoomSlider.Minimum = zoomControl.Min;
-                ZoomSlider.Maximum = zoomControl.Max;
-                ZoomSlider.StepFrequency = zoomControl.Step;
+                zoomControl.TrySetAuto(false);
+                zoomControl.TryGetValue(out double value);
+                ZoomSlider.Minimum = zoomControl.Capabilities.Min;
+                ZoomSlider.Maximum = zoomControl.Capabilities.Max;
+                ZoomSlider.StepFrequency = zoomControl.Capabilities.Step;
                 ZoomSlider.Value = value;
 
                 ZoomSlider.ValueChanged += ZoomSlider_ValueChanged;
@@ -56,29 +57,18 @@ namespace CameraManualControls
             SetZoomLevel((float)ZoomSlider.Value);
         }
 
-        private void SetZoomLevel(float level)
+        private void SetZoomLevel(double level)
         {
-            var zoomControl = _mediaCapture.VideoDeviceController.ZoomControl;
+            var zoomControl = _mediaCapture.VideoDeviceController.Zoom;
 
             // Make sure zoomFactor is within the valid range
-            level = Math.Max(Math.Min(level, zoomControl.Max), zoomControl.Min);
+            level = Math.Max(Math.Min(level, zoomControl.Capabilities.Max), zoomControl.Capabilities.Min);
 
             // Make sure zoomFactor is a multiple of Step, snap to the next lower step
-            level -= (level % zoomControl.Step);
+            level -= (level % zoomControl.Capabilities.Step);
 
-            var settings = new ZoomSettings { Value = level };
-
-            if (zoomControl.SupportedModes.Contains(ZoomTransitionMode.Smooth))
-            {
-                // Favor smooth zoom for this sample
-                settings.Mode = ZoomTransitionMode.Smooth;
-            }
-            else
-            {
-                settings.Mode = zoomControl.SupportedModes.First();
-            }
-
-            zoomControl.Configure(settings);
+            
+            zoomControl.TrySetValue(level);
         }
 
     }

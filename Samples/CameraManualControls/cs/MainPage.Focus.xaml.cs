@@ -32,24 +32,28 @@ namespace CameraManualControls
 
         private void UpdateFocusControlCapabilities()
         {
-            var focusControl = _mediaCapture.VideoDeviceController.FocusControl;
+            var focusControl = _mediaCapture.VideoDeviceController.Focus;
 
-            if (focusControl.Supported)
+            if (focusControl.Capabilities.Supported)
             {
                 FocusButton.Tag = Visibility.Visible;
 
                 // Unhook the event handler, so that changing properties on the slider won't trigger an API call
                 FocusSlider.ValueChanged -= FocusSlider_ValueChanged;
-
-                var value = focusControl.Value;
-                FocusSlider.Minimum = focusControl.Min;
-                FocusSlider.Maximum = focusControl.Max;
-                FocusSlider.StepFrequency = focusControl.Step;
-                FocusSlider.Value = value;
+                focusControl.TrySetAuto(false);
+                if (focusControl.TryGetValue(out double value))
+                {
+                    FocusSlider.Minimum = focusControl.Capabilities.Min;
+                    FocusSlider.Maximum = focusControl.Capabilities.Max;
+                    FocusSlider.StepFrequency = focusControl.Capabilities.Step;
+                    FocusSlider.Value = value;
+                }
+                
+                
 
                 FocusSlider.ValueChanged += FocusSlider_ValueChanged;
 
-                CafFocusRadioButton.Visibility = focusControl.SupportedFocusModes.Contains(FocusMode.Continuous) ? Visibility.Visible : Visibility.Collapsed;
+                CafFocusRadioButton.Visibility = Visibility.Collapsed;
 
                 // Tap to focus requires support for RegionsOfInterest
                 TapFocusRadioButton.Visibility = (_mediaCapture.VideoDeviceController.RegionsOfInterestControl.AutoFocusSupported &&
@@ -81,7 +85,7 @@ namespace CameraManualControls
 
             var value = (sender as Slider).Value;
 
-            await _mediaCapture.VideoDeviceController.FocusControl.SetValueAsync((uint)value);
+            _mediaCapture.VideoDeviceController.Focus.TrySetValue(value);
         }
 
         private async void ManualFocusRadioButton_Checked(object sender, RoutedEventArgs e)
